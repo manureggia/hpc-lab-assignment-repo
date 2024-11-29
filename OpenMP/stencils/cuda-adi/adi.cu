@@ -17,7 +17,7 @@
 #include <cuda_runtime.h>
 
 /* Include polybench common header. */
-#include <polybench.h>
+#include "../../../common/polybench.h"
 
 /* Include benchmark-specific header. */
 /* Default data type is double, default size is 10x1024x1024. */
@@ -231,7 +231,7 @@ static void kernel_adi_host_parallel(
  * (ADI) methodology. This technique is often used to solve partial differential equations 
  * (PDEs), especially in diffusion and transport problems.
 */
-#elif OPT_TYPE == DEVICE
+#if OPT_TYPE == DEVICE
 static void kernel_adi(int tsteps, int n, DATA_TYPE POLYBENCH_2D(X, N, N, n, n),
                       DATA_TYPE POLYBENCH_2D(A, N, N, n, n),
                       DATA_TYPE POLYBENCH_2D(B, N, N, n, n))
@@ -368,6 +368,10 @@ int main(int argc, char **argv)
   /* Retrieve problem size. */
   int n = N;
   int tsteps = TSTEPS;
+  double wt;
+  struct timespec rt[2];
+
+  DATA_TYPE* d_X, *d_A, *d_B;
 
   /* Variable declaration/allocation. */
   POLYBENCH_2D_ARRAY_DECL(X, DATA_TYPE, N, N, n, n);
@@ -379,14 +383,19 @@ int main(int argc, char **argv)
 
 
   clock_gettime(CLOCK_REALTIME, rt + 0);
-  kernel_adi(tsteps, n, POLYBENCH_ARRAY(X), POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B));
+  kernel_adi_host(tsteps, n, POLYBENCH_ARRAY(X), POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B));
   clock_gettime(CLOCK_REALTIME, rt + 1);
   wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
   printf("ADI (Host) : %9.3f sec %9.1f GFLOPS\n", wt, 2.0 * n * n * n / (1.0e9 * wt));
 
+  gpuErrchk(cudaMalloc((void **)&d_X, sizeof(DATA_TYPE) * n * n));
+  gpuErrchk(cudaMalloc((void **)&d_A, sizeof(DATA_TYPE) * n * n));
+  gpuErrchk(cudaMalloc((void **)&d_B, sizeof(DATA_TYPE) * n * n));
+
   /* start second timer */
   clock_gettime(CLOCK_REALTIME, rt + 0);
   /*cuda mem copy */
+
 
   gpuErrchk(cudaMemcpy(d_X, X, sizeof(DATA_TYPE) * n * n, cudaMemcpyHostToDevice));
   gpuErrchk(cudaMemcpy(d_A, A, sizeof(DATA_TYPE) * n * n, cudaMemcpyHostToDevice));
