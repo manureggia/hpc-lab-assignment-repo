@@ -31,6 +31,23 @@
 #define OPT_TYPE HOST
 #endif
 
+int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
+{
+    int return_value = 1;
+    for (int i = 0; i < n; i++)
+    {
+        for (int j = 0; j < n; j++)
+        {
+            if (fabs(X_host[i * n + j] - X_device[i * n + j]) > 1e-6)
+            {
+                printf("Mismatch at (%d, %d): Host = %f, Device = %f\n", i, j, X_host[i * n + j], X_device[i * n + j]);
+                return_value = 0;
+            }
+        }
+    }
+    return return_value;
+}
+
 /* Array initialization. */
 static void init_array(int n,
                        DATA_TYPE POLYBENCH_2D(X, N, N, n, n),
@@ -66,9 +83,8 @@ static void print_array(int n,
   fprintf(stderr, "\n");
 }
 
-#if OPT_TYPE == NO_OPT
 
-static void kernel_adi(int tsteps, int n, DATA_TYPE POLYBENCH_2D(X, N, N, n, n), DATA_TYPE POLYBENCH_2D(A, N, N, n, n), DATA_TYPE POLYBENCH_2D(B, N, N, n, n))
+static void kernel_adi_nopt(int tsteps, int n, DATA_TYPE POLYBENCH_2D(X, N, N, n, n), DATA_TYPE POLYBENCH_2D(A, N, N, n, n), DATA_TYPE POLYBENCH_2D(B, N, N, n, n))
 {
   for (int t = 0; t < _PB_TSTEPS; t++)
   {
@@ -112,7 +128,7 @@ static void kernel_adi(int tsteps, int n, DATA_TYPE POLYBENCH_2D(X, N, N, n, n),
   }
 }
 
-#elif OPT_TYPE == HOST
+#if OPT_TYPE == HOST
 static void kernel_adi(
   int tsteps,
   int n,
@@ -299,24 +315,37 @@ int main(int argc, char **argv)
 
   /* Variable declaration/allocation. */
   POLYBENCH_2D_ARRAY_DECL(X, DATA_TYPE, N, N, n, n);
+  POLYBENCH_2D_ARRAY_DECL(X_h, DATA_TYPE, N, N, n, n);
   POLYBENCH_2D_ARRAY_DECL(A, DATA_TYPE, N, N, n, n);
   POLYBENCH_2D_ARRAY_DECL(B, DATA_TYPE, N, N, n, n);
+  POLYBENCH_2D_ARRAY_DECL(B_h, DATA_TYPE, N, N, n, n);
 
   /* Initialize array(s). */
   init_array(n, POLYBENCH_ARRAY(X), POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B));
+  init_array(n, POLYBENCH_ARRAY(X_h), POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B_h));
+
+  kernel_adi_nopt(tsteps, n, POLYBENCH_ARRAY(X),
+             POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B));
 
   /* Start timer. */
   polybench_start_instruments;
 
   /* Run kernel. */
-  kernel_adi(tsteps, n, POLYBENCH_ARRAY(X),
-             POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B));
+  kernel_adi(tsteps, n, POLYBENCH_ARRAY(X_h),
+             POLYBENCH_ARRAY(A), POLYBENCH_ARRAY(B_h));
 
   /* Stop and print timer. */
   polybench_stop_instruments;
   polybench_print_instruments;
 
-
+    if (compare_matrices(X, X_h, n))
+    {
+        printf("Risultati Host e Device CORRETTI!\n");
+    }
+    else
+    {
+        printf("Risultati Host e Device NON corrispondono!\n");
+    }
 
   /* Prevent dead-code elimination. All live-out data must be printed
      by the function call in argument. */
