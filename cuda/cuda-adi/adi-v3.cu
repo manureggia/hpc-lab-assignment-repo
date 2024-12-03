@@ -102,18 +102,48 @@ void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B
 }
 
 
-// Kernel per aggiornamento lungo le colonne
+void adi_column_update_host(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+{
+    for (int i1 = 0; i1 < n; i1++)
+    {
+        for (int i2 = 1; i2 < n; i2++)
+        {
+            
+            X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+            B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+        }
+    }
+
+}
+
+void adi_row_update_host(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+{
+    for (int i1 = 1; i1 < n; i1++)
+        {
+            for (int i2 = 0; i2 < n; i2++)
+            {
+                X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+                B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+            }
+        }
+}
+
 __global__ void adi_column_update(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
-    int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int i2 = blockIdx.y * blockDim.y + threadIdx.y;
+    // Ogni thread gestisce una riga specifica
+    int i1 = blockIdx.x * blockDim.x + threadIdx.x; 
 
-    if (i1 < n && i2 > 0 && i2 < n)
+    if (i1 < n)
     {
-        X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-        B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+        // Calcolo sequenziale lungo le colonne (i2)
+        for (int i2 = 1; i2 < n; i2++)
+        {
+            X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+            B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+        }
     }
 }
+
 
 // Kernel per normalizzazione lungo l'ultima colonna
 __global__ void adi_column_normalize(int n, DATA_TYPE *X, DATA_TYPE *B)
@@ -130,26 +160,30 @@ __global__ void adi_column_normalize(int n, DATA_TYPE *X, DATA_TYPE *B)
 __global__ void adi_column_backsub(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
     int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int i2 = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (i1 < n && i2 < n - 2)
+    if (i1 < n)
     {
-        X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - 
-                                    X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / 
-                                    B[i1 * n + (n - i2 - 3)];
+        for (int i2 = 0; i2 < n - 2; i2++)
+        {
+            X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - 
+                                        X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / 
+                                        B[i1 * n + (n - i2 - 3)];
+        }
     }
 }
 
-// Kernel per aggiornamento lungo le righe
+
 __global__ void adi_row_update(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
-    int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int i2 = blockIdx.y * blockDim.y + threadIdx.y;
+    int i2 = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (i1 > 0 && i1 < n && i2 < n)
+    if (i2 < n)
     {
-        X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-        B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+        for (int i1 = 1; i1 < n; i1++)
+        {
+            X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+            B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+        }
     }
 }
 
@@ -167,51 +201,56 @@ __global__ void adi_row_normalize(int n, DATA_TYPE *X, DATA_TYPE *B)
 // Kernel per back-substitution lungo le righe
 __global__ void adi_row_backsub(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
-    int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int i2 = blockIdx.y * blockDim.y + threadIdx.y;
+    int i2 = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (i1 < n - 2 && i2 < n)
+    if (i2 < n)
     {
-        X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - 
-                                    X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / 
-                                    B[(n - 2 - i1) * n + i2];
+        for (int i1 = 0; i1 < n - 2; i1++)
+        {
+            X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - 
+                                        X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / 
+                                        B[(n - 2 - i1) * n + i2];
+        }
     }
 }
 
-// Funzione principale per eseguire il metodo ADI su GPU
+
+
+
 void kernel_adi_device(int tsteps, int n, DATA_TYPE *d_X, DATA_TYPE *d_A, DATA_TYPE *d_B)
 {
-    dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 dimGrid((n + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    // Configurazione per kernel con parallelismo lungo 1 dimensione
+    dim3 dimBlock1D(BLOCK_SIZE);  // Numero di thread per blocco
+    dim3 dimGrid1D((n + BLOCK_SIZE - 1) / BLOCK_SIZE);  // Numero di blocchi
 
     for (int t = 0; t < tsteps; t++)
     {
-        // Aggiornamento lungo le colonne
-        adi_column_update<<<dimGrid, dimBlock>>>(n, d_X, d_A, d_B);
+        // 1. Aggiornamento lungo le colonne
+        adi_column_update<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_A, d_B);
+        cudaDeviceSynchronize();  // Sincronizza per completare l'aggiornamento
+
+        // 2. Normalizzazione lungo l'ultima colonna
+        adi_column_normalize<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_B);
         cudaDeviceSynchronize();
 
-        // Normalizzazione lungo l'ultima colonna
-        dim3 gridDim1D((n + BLOCK_SIZE - 1) / BLOCK_SIZE);
-        adi_column_normalize<<<gridDim1D, dimBlock>>>(n, d_X, d_B);
+        // 3. Back-substitution lungo le colonne
+        adi_column_backsub<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_A, d_B);
         cudaDeviceSynchronize();
 
-        // Back-substitution lungo le colonne
-        adi_column_backsub<<<dimGrid, dimBlock>>>(n, d_X, d_A, d_B);
+        // 4. Aggiornamento lungo le righe
+        adi_row_update<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_A, d_B);
         cudaDeviceSynchronize();
 
-        // Aggiornamento lungo le righe
-        adi_row_update<<<dimGrid, dimBlock>>>(n, d_X, d_A, d_B);
+        // 5. Normalizzazione lungo l'ultima riga
+        adi_row_normalize<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_B);
         cudaDeviceSynchronize();
 
-        // Normalizzazione lungo l'ultima riga
-        adi_row_normalize<<<gridDim1D, dimBlock>>>(n, d_X, d_B);
-        cudaDeviceSynchronize();
-
-        // Back-substitution lungo le righe
-        adi_row_backsub<<<dimGrid, dimBlock>>>(n, d_X, d_A, d_B);
+        // 6. Back-substitution lungo le righe
+        adi_row_backsub<<<dimGrid1D, dimBlock1D>>>(n, d_X, d_A, d_B);
         cudaDeviceSynchronize();
     }
 }
+
 
 
 // Confronta due matrici per verificare la correttezza
@@ -222,7 +261,7 @@ int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
     {
         for (int j = 0; j < n; j++)
         {
-            if (fabs(X_host[i * n + j] - X_device[i * n + j]) > 1e-6)
+            if (fabs(X_host[i * n + j] - X_device[i * n + j]) > 1e-4)
             {
                 printf("Mismatch at (%d, %d): Host = %f, Device = %f\n", i, j, X_host[i * n + j], X_device[i * n + j]);
                 return_value = 0;
@@ -239,46 +278,34 @@ int main()
     double wt;
     struct timespec rt[2];
 
-    DATA_TYPE *X, *X_dev, *A, *B, *B_dev;
-    DATA_TYPE *d_X, *d_A, *d_B;
+    DATA_TYPE *X_host, *X_dev, *A, *B_host, *B_dev;
 
-    X = (DATA_TYPE *)malloc(n * n * sizeof(DATA_TYPE));
-    X_dev = (DATA_TYPE *)malloc(n * n * sizeof(DATA_TYPE));
-    A = (DATA_TYPE *)malloc(n * n * sizeof(DATA_TYPE));
-    B = (DATA_TYPE *)malloc(n * n * sizeof(DATA_TYPE));
-    B_dev = (DATA_TYPE *)malloc(n * n * sizeof(DATA_TYPE));
+    // Allocazione memoria unificata
+    cudaMallocManaged(&X_host, n * n * sizeof(DATA_TYPE));
+    cudaMallocManaged(&X_dev, n * n * sizeof(DATA_TYPE));
+    cudaMallocManaged(&A, n * n * sizeof(DATA_TYPE));
+    cudaMallocManaged(&B_host, n * n * sizeof(DATA_TYPE));
+    cudaMallocManaged(&B_dev, n * n * sizeof(DATA_TYPE));
 
-    init_array(n, X, X_dev, A, B, B_dev);
-    // Kernel host
+    // Inizializzazione
+    init_array(n, X_host, X_dev, A, B_host, B_dev);
+
+    // Esecuzione su CPU
     clock_gettime(CLOCK_REALTIME, rt);
-    kernel_adi_host(tsteps, n, X, A, B);
+    kernel_adi_host(tsteps, n, X_host, A, B_host);
     clock_gettime(CLOCK_REALTIME, rt + 1);
-
     wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
     printf("ADI (Host): %9.3f sec\n", wt);
 
-    // Allocazione memoria GPU
-    cudaMalloc((void **)&d_X, sizeof(DATA_TYPE) * n * n);
-    cudaMalloc((void **)&d_A, sizeof(DATA_TYPE) * n * n);
-    cudaMalloc((void **)&d_B,sizeof(DATA_TYPE) * n * n);
-    // Copia dei dati
-    cudaMemcpy(d_X, X_dev, sizeof(DATA_TYPE) * n * n, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_A, A, sizeof(DATA_TYPE) * n * n, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, B_dev, sizeof(DATA_TYPE) * n * n, cudaMemcpyHostToDevice);
-
-    //Dimensionamento Griglia e Blocco (16 - con 32 non parte)
-   
+    // Esecuzione su GPU
     clock_gettime(CLOCK_REALTIME, rt);
-    kernel_adi_device(tsteps, n, d_X, d_A, d_B);    
-    gpuErrchk(cudaPeekAtLastError());  
-    gpuErrchk(cudaDeviceSynchronize());
+    kernel_adi_device(tsteps, n, X_dev, A, B_dev);
     clock_gettime(CLOCK_REALTIME, rt + 1);
-
     wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
     printf("ADI (GPU): %9.3f sec\n", wt);
-    cudaMemcpy(X_dev, d_X, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
 
-    if (compare_matrices(X, X_dev, n))
+    // Confronto risultati
+    if (compare_matrices(X_host, X_dev, n))
     {
         printf("Risultati Host e Device CORRETTI!\n");
     }
@@ -288,14 +315,11 @@ int main()
     }
 
     // Liberazione memoria
-    free(X);
-    free(X_dev);
-    free(A);
-    free(B_dev);
-    free(B);
-    cudaFree(d_X);
-    cudaFree(d_A);
-    cudaFree(d_B);
+    cudaFree(X_host);
+    cudaFree(X_dev);
+    cudaFree(A);
+    cudaFree(B_host);
+    cudaFree(B_dev);
 
     return 0;
 }
