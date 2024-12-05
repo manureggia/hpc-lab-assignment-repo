@@ -22,22 +22,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort =
 	}
 }
 
-void init_array(int n, DATA_TYPE *X, DATA_TYPE *X_DEV, DATA_TYPE *A, DATA_TYPE *B, DATA_TYPE *B_DEV)
-{
-	#pragma omp parallel
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = 0; j < n; j++)
-		{
-			X[i * n + j] 			= ((DATA_TYPE)i * (j + 1) + 1) / n;
-			X_DEV[i * n + j] 	= ((DATA_TYPE)i * (j + 1) + 1) / n;
-			A[i * n + j] 			= ((DATA_TYPE)i * (j + 2) + 2) / n;
-			B[i * n + j] 			= ((DATA_TYPE)i * (j + 3) + 3) / n;
-			B_DEV[i * n + j] 	= ((DATA_TYPE)i * (j + 3) + 3) / n;
-		}
-	}
-}
-
 void print_array(int n, DATA_TYPE *X)
 {
 	for (int i = 0; i < n; i++)
@@ -53,16 +37,16 @@ void print_array(int n, DATA_TYPE *X)
 }
 
 // Confronta due matrici per verificare la correttezza
-int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
+int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_copyice, int n)
 {
   int return_value = 1;
   for (int i = 0; i < n; i++)
   {
     for (int j = 0; j < n; j++)
     {
-      if (fabs(X_host[i * n + j] - X_device[i * n + j]) > 1e-6)
+      if (fabs(X_host[i * n + j] - X_copyice[i * n + j]) > 1e-6)
       {
-        printf("Mismatch at (%d, %d): Host = %f, Device = %f\n", i, j, X_host[i * n + j], X_device[i * n + j]);
+        printf("Mismatch at (%d, %d): Host = %f, Device = %f\n", i, j, X_host[i * n + j], X_copyice[i * n + j]);
         return_value = 0;
       }
     }
@@ -71,7 +55,7 @@ int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
 }
 
 // Kernel host
-void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	/**
 	 * Questo codice implementa una risoluzione dell'algoritmo Alternating-Direction Implicit (ADI) 
@@ -147,7 +131,7 @@ void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B
 	}
 }
 
-__global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+__global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	// SENZA SHARED MEMORY
 	// -----------------------------------------------
@@ -171,7 +155,7 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, DATA_TYPE
 
 	// todo ...
 }
-__global__ void kernel_column_norm(int n, DATA_TYPE *X, DATA_TYPE *B)
+__global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	int row = blockIdx.x * blockDim.x + threadIdx.x;
 	if (row < n) 
@@ -180,7 +164,7 @@ __global__ void kernel_column_norm(int n, DATA_TYPE *X, DATA_TYPE *B)
 		X[last_col_idx] /= B[last_col_idx];
 	}
 }
-__global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+__global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
 	int row = blockIdx.x * blockDim.x + threadIdx.x;
 	if (row < n) 
@@ -193,7 +177,7 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, DATA_TYPE *A
 		}
 	}
 }
-__global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+__global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
@@ -207,7 +191,7 @@ __global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, DATA_TYPE *A
 		}
 	}
 }
-__global__ void kernel_row_norm(int n, DATA_TYPE *X, DATA_TYPE *B)
+__global__ void kernel_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
@@ -216,7 +200,7 @@ __global__ void kernel_row_norm(int n, DATA_TYPE *X, DATA_TYPE *B)
 		X[last_row_idx] /= B[last_row_idx];
 	}
 }
-__global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+__global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
@@ -237,31 +221,46 @@ int main()
 	const int bytes = sizeof(DATA_TYPE) * n * n;
 	struct timespec rt[2];
 
-	DATA_TYPE* X 			= (DATA_TYPE*)malloc(bytes);
-	DATA_TYPE* X_dev 	= (DATA_TYPE*)malloc(bytes);
-	DATA_TYPE* A 			= (DATA_TYPE*)malloc(bytes);
-	DATA_TYPE* B 			= (DATA_TYPE*)malloc(bytes);
-	DATA_TYPE* B_dev 	= (DATA_TYPE*)malloc(bytes);
-	init_array(n, X, X_dev, A, B, B_dev);
+	// Lato GPU sono necessari i seguenti dati:
+	// - X[] lettura/scrittura
+	// - B[] lettura/scrittura
+	// - A[] solo lettura
+	// Quindi possiamo usare la memoria unificata per queste 3 variabili
+	// X=d_X
+	// B=d_B
+	// A=d_A
+
+	DATA_TYPE *X, *A, *B;
+	gpuErrchk(cudaMallocManaged(&A, bytes));
+	gpuErrchk(cudaMallocManaged(&X, bytes));
+	gpuErrchk(cudaMallocManaged(&B, bytes));
+
+	DATA_TYPE* X_copy = (DATA_TYPE*)malloc(bytes);
+	DATA_TYPE* B_copy = (DATA_TYPE*)malloc(bytes);
+
+	#pragma omp parallel
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			int idx 			= i * n + j;
+			X[idx] 				= ((DATA_TYPE)i * (j + 1) + 1) / n;
+			A[idx] 				= ((DATA_TYPE)i * (j + 2) + 2) / n;
+			B[idx] 				= ((DATA_TYPE)i * (j + 3) + 3) / n;
+			X_copy[idx] 	= ((DATA_TYPE)i * (j + 1) + 1) / n;
+			B_copy[idx] 	= ((DATA_TYPE)i * (j + 3) + 3) / n;
+		}
+	}
 
 	// call ADI on host
 	{
 		clock_gettime(CLOCK_REALTIME, rt);
-		kernel_adi_host(tsteps, n, X, A, B);
+		kernel_adi_host(tsteps, n, X_copy, A, B_copy);
 		clock_gettime(CLOCK_REALTIME, rt + 1);
 
 		double wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
 		printf("ADI (Host): %9.3f sec\n", wt);
 	}
-
-	// Allocazione memoria GPU
-	DATA_TYPE *d_X, *d_A, *d_B;
-	cudaMalloc(&d_X, bytes);
-	cudaMalloc(&d_A, bytes);
-	cudaMalloc(&d_B, bytes);
-	cudaMemcpy(d_X, X_dev, 	bytes, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_A, A, 			bytes, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, B_dev, 	bytes, cudaMemcpyHostToDevice);
 
 	// call ADI on GPU
 	{
@@ -295,17 +294,20 @@ int main()
 			// gli aggiornamenti lungo una colonna di una stessa riga dipendono dal valore precedente
 			// nella stessa riga, quindi non è parallelizzabile lungo le colonne,
 			// ma l'operazione per righe differenti è indipendente.
-			kernel_column_forward_elimination<<<grid, block>>>(n, d_X, d_A, d_B);
-			cudaDeviceSynchronize();
+			kernel_column_forward_elimination<<<grid, block>>>(n, X, A, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 			// [1.2] normalizzazione: 
 			// parallelizzabile per riga; ogni riga è indipendente.
-			kernel_column_norm<<<grid, block>>>(n, d_X, d_B);
-			cudaDeviceSynchronize();
+			kernel_column_norm<<<grid, block>>>(n, X, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 			// [1.3] sostituzione all'indietro (Back Substitution):
 			// parallelizzabile per riga; anche qui, ogni riga rappresenta un sistema tridiagonale indipendente.
 			// L'operazione lungo colonne dipende dai valori precedenti della stessa riga.
-			kernel_column_back_sostitution<<<grid, block>>>(n, d_X, d_A, d_B);
-			cudaDeviceSynchronize();
+			kernel_column_back_sostitution<<<grid, block>>>(n, X, A, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 
 			// ------------------------------------------------
 			// [2] Aggiornamento lungo le righe
@@ -315,21 +317,22 @@ int main()
 			// tridiagonale indipendente.
 			// Gli aggiornamenti lungo una riga dipendono dal valore precedente nella stessa colonna, 
 			// quindi non è parallelizzabile lungo le righe, ma può essere parallelo tra colonne diverse.
-			kernel_row_forward_elimination<<<grid, block>>>(n, d_X, d_A, d_B);
-			cudaDeviceSynchronize();
+			kernel_row_forward_elimination<<<grid, block>>>(n, X, A, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 			// [2.2] normalizzazione: 
 			// parallelizzabile per colonna; ogni colonna è indipendente.
-			kernel_row_norm<<<grid, block>>>(n, d_X, d_B);
-			cudaDeviceSynchronize();
+			kernel_row_norm<<<grid, block>>>(n, X, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 			// [2.3] sostituzione all'indietro:
 			// parallelizzabile per colonna; simile all'eliminazione in avanti, 
 			// ogni colonna rappresenta un sistema tridiagonale indipendente.
-			kernel_row_back_sostitution<<<grid, block>>>(n, d_X, d_A, d_B);
-			cudaDeviceSynchronize();
+			kernel_row_back_sostitution<<<grid, block>>>(n, X, A, B);
+			gpuErrchk(cudaPeekAtLastError());  
+			gpuErrchk(cudaDeviceSynchronize());
 		}    
-    cudaMemcpy(X_dev, d_X, bytes, cudaMemcpyDeviceToHost);
-		gpuErrchk(cudaPeekAtLastError());  
-	
+		
 		clock_gettime(CLOCK_REALTIME, rt + 1);
 
 		double wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
@@ -337,7 +340,7 @@ int main()
 	}
 
 
-	if (compare_matrices(X, X_dev, n))
+	if (compare_matrices(X, X_copy, n))
 	{
 		printf("Risultati Host e Device CORRETTI!\n");
 	}
@@ -347,13 +350,11 @@ int main()
 	}
 
 	// Liberazione memoria
-	free(X);
-	free(X_dev);
-	free(A);
-	free(B_dev);
-	free(B);
-	cudaFree(d_X);
-	cudaFree(d_A);
-	cudaFree(d_B);
+
+	free(X_copy);
+	free(B_copy);
+	gpuErrchk(cudaFree(X));
+	gpuErrchk(cudaFree(A));
+	gpuErrchk(cudaFree(B));
 	return 0;
 }
