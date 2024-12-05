@@ -8,8 +8,8 @@
 #include "adi.h"
 
 
-#define gpuErrchk(ans)                        \
-{                                         \
+#define gpuErrchk(ans)                  \
+{                                       \
 	gpuAssert((ans), __FILE__, __LINE__); \
 }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
@@ -52,182 +52,6 @@ void print_array(int n, DATA_TYPE *X)
 	printf("\n");
 }
 
-// Kernel host
-void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
-{
-	for (int t = 0; t < tsteps; t++)
-	{
-		// Aggiornamento lungo le colonne
-		for (int i1 = 0; i1 < n; i1++)
-		{
-			for (int i2 = 1; i2 < n; i2++)
-			{
-				X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-			}
-		}
-
-		// Normalizzazione
-		for (int i1 = 0; i1 < n; i1++)
-			X[i1 * n + (n - 1)] /= B[i1 * n + (n - 1)];
-
-		// Back-substitution
-		for (int i1 = 0; i1 < n; i1++)
-		{
-			for (int i2 = 0; i2 < n - 2; i2++)
-				X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / B[i1 * n + (n - i2 - 3)];
-		}
-
-		// Aggiornamento lungo le righe
-		for (int i1 = 1; i1 < n; i1++)
-		{
-			for (int i2 = 0; i2 < n; i2++)
-			{
-				X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-			}
-		}
-
-		// Normalizzazione
-		for (int i2 = 0; i2 < n; i2++)
-			X[(n - 1) * n + i2] /= B[(n - 1) * n + i2];
-
-		// Back-substitution
-		for (int i1 = 0; i1 < n - 2; i1++)
-		{
-			for (int i2 = 0; i2 < n; i2++)
-				X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / B[(n - 2 - i1) * n + i2];
-		}
-	}
-}
-
-// Kernel per aggiornamento lungo le colonne
-__global__ void adi_column_update(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
-{
-  int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-  int i2 = blockIdx.y * blockDim.y + threadIdx.y;
-  if (i1 < n && i2 > 0 && i2 < n)
-  {
-    X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-    B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-  }
-}
-
-// Kernel per normalizzazione lungo l'ultima colonna
-__global__ void adi_column_normalize(int n, DATA_TYPE *X, DATA_TYPE *B)
-{
-  int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if (i1 < n)
-    X[i1 * n + (n - 1)] /= B[i1 * n + (n - 1)];
-  
-}
-
-// Kernel per back-substitution lungo le colonne
-__global__ void adi_column_backsub(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
-{
-  int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-  int i2 = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if (i1 < n && i2 < n - 2)
-  {
-    X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - 
-                                X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / 
-                                B[i1 * n + (n - i2 - 3)];
-  }
-}
-
-// Kernel per aggiornamento lungo le righe
-__global__ void adi_row_update(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
-{
-  int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-  int i2 = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if (i1 > 0 && i1 < n && i2 < n)
-  {
-    X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-    B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-  }
-}
-
-// Kernel per normalizzazione lungo l'ultima riga
-__global__ void adi_row_normalize(int n, DATA_TYPE *X, DATA_TYPE *B)
-{
-  int i2 = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if (i2 < n)
-    X[(n - 1) * n + i2] /= B[(n - 1) * n + i2];
-  
-}
-
-// Kernel per back-substitution lungo le righe
-__global__ void adi_row_backsub(int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
-{
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-
-  if (col < n - 2 && row < n)
-  {
-    X[(n - 2 - col) * n + row] = (X[(n - 2 - col) * n + row] - 
-                                  X[(n - col - 3) * n + row] * A[(n - 3 - col) * n + row]) / 
-                                  B[(n - 2 - col) * n + row];
-  }
-}
-
-// Funzione principale per eseguire il metodo ADI su GPU
-void kernel_adi_device(int tsteps, int n, DATA_TYPE *d_X, DATA_TYPE *d_A, DATA_TYPE *d_B)
-{
-  const dim3 block(
-    BLOCK_SIZE, 
-    BLOCK_SIZE
-  );
-  const dim3 grid1D(
-    (n + BLOCK_SIZE - 1) / BLOCK_SIZE
-  );
-  const dim3 grid2D(
-    (n + BLOCK_SIZE - 1) / BLOCK_SIZE, 
-    (n + BLOCK_SIZE - 1) / BLOCK_SIZE
-  );
-
-	for (int t = 0; t < tsteps; t++)
-	{
-		// Aggiornamento lungo le colonne
-		adi_column_update<<<grid2D, block>>>(n, d_X, d_A, d_B);
-		cudaDeviceSynchronize();
-
-		// Normalizzazione lungo l'ultima colonna
-		adi_column_normalize<<<grid1D, block>>>(n, d_X, d_B);
-		cudaDeviceSynchronize();
-
-		// Back-substitution lungo le colonne
-		adi_column_backsub<<<grid2D, block>>>(n, d_X, d_A, d_B);
-		cudaDeviceSynchronize();
-
-		// Aggiornamento lungo le righe
-		adi_row_update<<<grid2D, block>>>(n, d_X, d_A, d_B);
-		cudaDeviceSynchronize();
-
-		// Normalizzazione lungo l'ultima riga
-		adi_row_normalize<<<grid1D, block>>>(n, d_X, d_B);
-		cudaDeviceSynchronize();
-
-		// Back-substitution lungo le righe
-		adi_row_backsub<<<grid2D, block>>>(n, d_X, d_A, d_B);
-		cudaDeviceSynchronize();
-	}
-}
-
-
-__global__  void kernel_update_columns(int tsteps, int n, DATA_TYPE *d_X, DATA_TYPE *d_A, DATA_TYPE *d_B)
-{
-  
-}
-__global__  void kernel_update_rows(int tsteps, int n, DATA_TYPE *d_X, DATA_TYPE *d_A, DATA_TYPE *d_B)
-{
-  
-}
-
-
 // Confronta due matrici per verificare la correttezza
 int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
 {
@@ -246,6 +70,84 @@ int compare_matrices(DATA_TYPE *X_host, DATA_TYPE *X_device, int n)
   return return_value;
 }
 
+// Kernel host
+void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
+{
+	/**
+	 * Questo codice implementa una risoluzione dell'algoritmo Alternating-Direction Implicit (ADI) 
+	 * su una griglia bidimensionale. È strutturato per aggiornare le soluzioni delle equazioni 
+	 * differenziali in due passaggi: uno lungo le colonne e uno lungo le righe della griglia
+	 */
+
+	/** Ad ogni iterazione, il sistema viene aggiornato lungo le colonne e le righe */
+	for (int t = 0; t < tsteps; t++)
+	{
+		/**
+		 * Aggiornamento lungo le colonne:
+		 * Per ogni riga:
+		 * 1. si applica l'eliminazione in avanti per ridurre il sistema tridiagonale lungo le colonne.
+		 * 2. X rappresenta il vettore delle soluzioni.
+		 * 3. A e B rappresentano i coefficienti delle equazioni differenziali.
+		 */
+		for (int row = 0; row < n; row++)
+		{
+			for (int col = 1; col < n; col++)
+			{
+				X[row * n + col] -= X[row * n + col - 1] * A[row * n + col] / B[row * n + col - 1];
+				B[row * n + col] -= A[row * n + col] * A[row * n + col] / B[row * n + col - 1];
+			}
+		}
+
+		/**
+		 * Normalizzazione:
+		 * Il valore della soluzione nella parte inferiore della colonna è normalizzato dividendo 
+		 * per il coefficiente B
+		 */
+		for (int col = 0; col < n; col++)
+			X[col * n + (n - 1)] /= B[col * n + (n - 1)];
+
+		
+		/**
+		 * Sostituzione all'indietro (Back Substitution):
+		 * Dopo l'eliminazione in avanti, si risolvono i valori risalendo lungo la colonna
+		 */
+		for (int row = 0; row < n; row++)
+			for (int col = 0; col < n - 2; col++)
+				X[row * n + (n - col - 2)] = (X[row * n + (n - col - 2)] - X[row * n + (n - col - 3)] * A[row * n + (n - col - 3)]) / B[row * n + (n - col - 3)];
+		
+
+		/**
+		 * Aggiornamento lungo le righe:
+		 * Qui il processo si applica lungo le righe.
+		 * Stesso approccio dell'eliminazione lungo le colonne, ma con iterazione spaziale lungo i1.
+		 */
+		for (int row = 1; row < n; row++)
+		{
+			for (int col = 0; col < n; col++)
+			{
+				X[row * n + col] -= X[(row - 1) * n + col] * A[row * n + col] / B[(row - 1) * n + col];
+				B[row * n + col] -= A[row * n + col] * A[row * n + col] / B[(row - 1) * n + col];
+			}
+		}
+
+		/**
+		 * Normalizzazione:
+		 * Si normalizza l'ultima riga dividendo per B.
+		 */
+		for (int col = 0; col < n; col++)
+			X[(n - 1) * n + col] /= B[(n - 1) * n + col];
+
+		/**
+		 * Back-substitution:
+		 * Anche in questo caso, si risolve il sistema risalendo lungo le righe
+		 */
+		for (int row = 0; row < n - 2; row++)
+			for (int col = 0; col < n; col++)
+				X[(n - 2 - row) * n + col] = (X[(n - 2 - row) * n + col] - X[(n - row - 3) * n + col] * A[(n - 3 - row) * n + col]) / B[(n - 2 - row) * n + col];
+	}
+}
+
+
 int main()
 {
 	const int n = N;
@@ -260,7 +162,7 @@ int main()
 	DATA_TYPE* B_dev 	= (DATA_TYPE*)malloc(bytes);
 	init_array(n, X, X_dev, A, B, B_dev);
 
-	// Kernel host
+	// call ADI on host
 	{
 		clock_gettime(CLOCK_REALTIME, rt);
 		kernel_adi_host(tsteps, n, X, A, B);
@@ -275,46 +177,74 @@ int main()
 	cudaMalloc(&d_X, bytes);
 	cudaMalloc(&d_A, bytes);
 	cudaMalloc(&d_B, bytes);
-	cudaMemcpy(d_X, X_dev, bytes, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_A, A, bytes, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, B_dev, bytes, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_X, X_dev, 	bytes, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_A, A, 			bytes, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, B_dev, 	bytes, cudaMemcpyHostToDevice);
 
-	// Dimensionamento Griglia e Blocco (16 - con 32 non parte)
+	// call ADI on GPU
 	{
-    const dim3 block(
-      BLOCK_SIZE, 
-      BLOCK_SIZE
-    );
-    const dim3 grid2D(
-      (n + BLOCK_SIZE - 1) / BLOCK_SIZE, 
-      (n + BLOCK_SIZE - 1) / BLOCK_SIZE
-    );
+    const dim3 block(BLOCK_SIZE);
+    const dim3 grid((n + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
 		clock_gettime(CLOCK_REALTIME, rt);
+		/**
+		 * Come abbiamo visto nell'implementazione lato host, l'algoritmo adi si compone di diverse
+		 * passi fondamentali:
+		 * [1] Aggiornamento lungo le colonne: 
+		 * 		[1.1] eliminazione in avanti (Forward Elimination)
+		 * 		[1.2] normalizzazione
+		 * 		[1.3] sostituzione all'indietro (Back Substitution)
+		 * [2] Aggiornamento lungo le righe:
+		 * 		[2.1] eliminazione in avanti
+		 * 		[2.2] normalizzazione
+		 * 		[2.3] sostituzione all'indietro
+		 * 
+		 * Nell'algoritmo ADI, alcune operazioni possono essere eseguite in parallelo perché non dipendono 
+		 * direttamente dai risultati degli altri calcoli per ogni iterazione spaziale.
+		 * Le operazioni possono essere parallelizzate per righe durante l'aggiornamento lungo le colonne e 
+		 * per colonne durante l'aggiornamento lungo le righe.
+		 */
+		for (int t = 0; t < tsteps; t++)
+		{
+			// ------------------------------------------------
+			// [1] Aggiornamento lungo le colonne
+			// ------------------------------------------------
+			// [1.1] eliminazione in avanti (Forward Elimination): 
+			// gli aggiornamenti lungo una colonna di una stessa riga dipendono dal valore precedente
+			// nella stessa riga, quindi non è parallelizzabile lungo le colonne,
+			// ma l'operazione per righe differenti è indipendente.
+			kernel_column_forward_elimination<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
+			// [1.2] normalizzazione: 
+			// parallelizzabile per riga; ogni riga è indipendente.
+			kernel_column_norm<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
+			// [1.3] sostituzione all'indietro (Back Substitution):
+			// parallelizzabile per riga; anche qui, ogni riga rappresenta un sistema tridiagonale indipendente.
+			// L'operazione lungo colonne dipende dai valori precedenti della stessa riga.
+			kernel_column_back_sostitution<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
 
-    for (int t = 0; t < tsteps; t++)
-    {
-      //The ADI method is a two step iteration process that alternately updates the column and row spaces 
-      // of an approximate solution to AX - XB = C. 
-      // One ADI iteration consists of the following steps:
-      // 1. Solve for X^(j+1/2), where 
-      //   (A - β_(j+1)I)X^(j+1/2) = X^(j)(B - β_(j+1)I) + C.
-      // 2. Solve for X^(j+1), where 
-      //   X^(j+1)(B - α_(j+1)I) = (A - α_(j+1)I)X^(j+1/2) - C.
-
-      kernel_update_columns<<<grid, block>>>(n, d_X, d_A, d_B);
-      cudaDeviceSynchronize();  // Sincronizzazione per sicurezza
-
-      kernel_update_rows<<<grid, block>>>(n, d_X, d_A, d_B);
-      cudaDeviceSynchronize();
-    }
-
-
-
-		//kernel_adi_device(tsteps, n, d_X, d_A, d_B);		
-    
-    
-    
+			// ------------------------------------------------
+			// [2] Aggiornamento lungo le righe
+			// ------------------------------------------------
+			// [2.1] eliminazione in avanti:
+			// parallelizzabile per colonna; ogni colonna della griglia rappresenta un sistema 
+			// tridiagonale indipendente.
+			// Gli aggiornamenti lungo una riga dipendono dal valore precedente nella stessa colonna, 
+			// quindi non è parallelizzabile lungo le righe, ma può essere parallelo tra colonne diverse.
+			kernel_row_forward_elimination<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
+			// [2.2] normalizzazione: 
+			// parallelizzabile per colonna; ogni colonna è indipendente.
+			kernel_row_norm<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
+			// [2.3] sostituzione all'indietro:
+			// parallelizzabile per colonna; simile all'eliminazione in avanti, 
+			// ogni colonna rappresenta un sistema tridiagonale indipendente.
+			kernel_row_back_sostitution<<<grid, block>>>(...);
+			cudaDeviceSynchronize();
+		}    
     cudaMemcpy(X_dev, d_X, bytes, cudaMemcpyDeviceToHost);
 		gpuErrchk(cudaPeekAtLastError());  
 	
