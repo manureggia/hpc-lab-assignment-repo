@@ -90,7 +90,6 @@ void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_T
 		for (int col = 0; col < n; col++)
 			X[col * n + (n - 1)] /= B[col * n + (n - 1)];
 
-		
 		/**
 		 * Sostituzione all'indietro (Back Substitution):
 		 * Dopo l'eliminazione in avanti, si risolvono i valori risalendo lungo la colonna
@@ -99,7 +98,6 @@ void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_T
 			for (int col = 0; col < n - 2; col++)
 				X[row * n + (n - col - 2)] = (X[row * n + (n - col - 2)] - X[row * n + (n - col - 3)] * A[row * n + (n - col - 3)]) / B[row * n + (n - col - 3)];
 		
-
 		/**
 		 * Aggiornamento lungo le righe:
 		 * Qui il processo si applica lungo le righe.
@@ -135,10 +133,10 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 {
 	// SENZA SHARED MEMORY
 	// -----------------------------------------------
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n)
 	{
-		for (int col = 1; col < n; col++) 
+		for (int col = 1; col < n; col++)
 		{
 			int idx = row * n + col;
 			int prev_idx = row * n + (col - 1);
@@ -152,12 +150,11 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 	 * possono essere caricati nella shared memory. La shared memory riduce il numero di accessi alla memoria globale, 
 	 * minimizzando il tempo di latenza.
 	 */
-
-	// todo ...
+	// TODO ...
 }
 __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
 		int last_col_idx = row * n + (n - 1);
@@ -166,7 +163,7 @@ __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 }
 __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
-	int row = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
 		for (int col = n - 2; col >= 0; col--) 
@@ -264,8 +261,10 @@ int main()
 
 	// call ADI on GPU
 	{
-    const dim3 block(BLOCK_SIZE);
-    const dim3 grid((n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    // const dim3 block(BLOCK_SIZE);
+		const int nBlocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		dim3 blockLayout;
+		dim3 gridLayout;
 
 		clock_gettime(CLOCK_REALTIME, rt);
 		/**
@@ -294,18 +293,20 @@ int main()
 			// gli aggiornamenti lungo una colonna di una stessa riga dipendono dal valore precedente
 			// nella stessa riga, quindi non è parallelizzabile lungo le colonne,
 			// ma l'operazione per righe differenti è indipendente.
-			kernel_column_forward_elimination<<<grid, block>>>(n, X, A, B);
-			gpuErrchk(cudaPeekAtLastError());  
+			blockLayout = dim3(1, BLOCK_SIZE, 1);
+			gridLayout 	= dim3(1, nBlocks, 1);
+			kernel_column_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A, B);
+			gpuErrchk(cudaPeekAtLastError());
 			gpuErrchk(cudaDeviceSynchronize());
 			// [1.2] normalizzazione: 
 			// parallelizzabile per riga; ogni riga è indipendente.
-			kernel_column_norm<<<grid, block>>>(n, X, B);
+			kernel_column_norm<<<gridLayout, blockLayout>>>(n, X, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 			// [1.3] sostituzione all'indietro (Back Substitution):
 			// parallelizzabile per riga; anche qui, ogni riga rappresenta un sistema tridiagonale indipendente.
 			// L'operazione lungo colonne dipende dai valori precedenti della stessa riga.
-			kernel_column_back_sostitution<<<grid, block>>>(n, X, A, B);
+			kernel_column_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 
@@ -317,18 +318,20 @@ int main()
 			// tridiagonale indipendente.
 			// Gli aggiornamenti lungo una riga dipendono dal valore precedente nella stessa colonna, 
 			// quindi non è parallelizzabile lungo le righe, ma può essere parallelo tra colonne diverse.
-			kernel_row_forward_elimination<<<grid, block>>>(n, X, A, B);
+			blockLayout = dim3(BLOCK_SIZE, 1, 1);
+			gridLayout 	= dim3(nBlocks, 1, 1);
+			kernel_row_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 			// [2.2] normalizzazione: 
 			// parallelizzabile per colonna; ogni colonna è indipendente.
-			kernel_row_norm<<<grid, block>>>(n, X, B);
+			kernel_row_norm<<<gridLayout, blockLayout>>>(n, X, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 			// [2.3] sostituzione all'indietro:
 			// parallelizzabile per colonna; simile all'eliminazione in avanti, 
 			// ogni colonna rappresenta un sistema tridiagonale indipendente.
-			kernel_row_back_sostitution<<<grid, block>>>(n, X, A, B);
+			kernel_row_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 		}    
