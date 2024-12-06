@@ -160,23 +160,22 @@ void host_adi(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	/**
-	 * 1. Ogni blocco è monodimensionale lungo l'asse y. 
-	 * 		Quindi, ci sono BLOCK_SIZE thread organizzati verticalmente per blocco.
-	 * 2. La riga su cui opera ogni thread è calcolata come: row = blockIdx.y * blockDim.y + threadIdx.y;
-	 * 
-	 * Gli elementi di X, A, e B sono utilizzati più volte all'interno dello stesso blocco di thread, 
-	 * possono essere caricati nella shared memory. 
-	 * L'utilizzo della shared memory riduce il numero di accessi alla memoria globale, 
-	 * minimizzando il tempo di latenza.
+	 * 1. Each block is one-dimensional along the y-axis. 
+	 * 		Thus, there are BLOCK_SIZE threads organized vertically per block.
+	 * 2. The row on which each thread operates is calculated as: row = blockIdx.y * blockDim.y + threadIdx.y;
+	 * 	 
+	 * The elements of X, A, and B are used multiple times within the same thread block, 
+	 * they can be loaded into shared memory. 
+	 * Using shared memory reduces the number of global memory accesses, minimizing the latency time.
 	 */
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n)
 	{
-		// Per ogni riga, il thread itera su tutte le colonne da sinistra a destra
+		// For each row, the thread iterates over all columns from left to right
 		for (int col = 1; col < n; col++)
 		{
-			// Gli aggiornamenti per X e B sono effettuati in base ai valori precedenti nella stessa riga. 
-			// Questo dipende dalla struttura del problema, che ha una dipendenza direzionale lungo le colonne.
+			// Updates for X and B are made based on the previous values in the same row. 
+			// This depends on the structure of the problem, which has a directional dependence along the columns.
 			int idx = row * n + col;
 			int prev_idx = row * n + (col - 1);
 			if(B[prev_idx] != 0.f)
@@ -192,21 +191,20 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	/**
-	 * Il kernel kernel_column_norm ha lo scopo di normalizzare l'ultima colonna 
-	 * della matrice X rispetto a B per ogni riga.
+	 * The kernel kernel_column_norm is intended to normalize the last column 
+	 * of the matrix X with respect to B for each row.
 	 * 
-	 * !!IMPORTANTE!!
-	 * Questo kernel agisce su una singola colonna (n-1). 
-	 * L'uso della shared memory può essere evitato, dato che non si eseguono calcoli iterativi complessi sulla stessa riga.
-	 * Aggiunge latenza con l'uso di __syncthreads() e potrebbe peggiorare le prestazioni
+	 * This kernel acts on a single column (n-1). 
+	 * The use of shared memory can be avoided, since no complex iterative calculations are performed on the same row.
+	 * It adds latency with the use of __syncthreads() and may degrade performance
 	 */
 
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
-		// Data la riga viene calcolato l'indice dell'ultima colonna
-		// L'elemento X[last_col_idx] viene normalizzato dividendo per B[last_col_idx]
-		// Ogni thread normalizza un elemento nell'ultima colonna di una riga.
+		// Given the row, the index of the last column is calculated
+		// The element X[last_col_idx] is normalized by dividing by B[last_col_idx]
+		// Each thread normalizes one element in the last column of a row.
 		int last_col_idx = row * n + (n - 1);
 		if (B[last_col_idx] != 0.f) // impossibile dividere per 0
 			X[last_col_idx] /= B[last_col_idx];
@@ -215,20 +213,20 @@ __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
 	/**
-	 * Il kernel kernel_column_back_sostitution implementa la sostituzione all'indietro 
-	 * lungo le colonne per ogni riga della matrice X. 
-	 * Ogni thread elabora una riga indipendente dalle altre.
-	 * 
-	 * È possibile utilizzare la shared memory per evitare accessi ripetuti alla memoria globale. 
-	 * Ad esempio, si potrebbe caricare una riga di X, A e B in shared memory
+	 * The kernel kernel_column_back_substitution implements backward substitution 
+	 * along the columns for each row of the X array. 
+	 * Each thread processes one row independent of the others.
+	 *
+	 * You can use shared memory to avoid repeated accesses to global memory. 
+	 * For example, you could load a row of X, A and B into shared memory
 	 */
 
-	// Assegno una riga a ogni thread in base a blockIdx.y e threadIdx.y
+	// I assign a row to each thread based on blockIdx.y and threadIdx.y
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
-		// Parte dalla penultima colonna (n - 2) e procede verso sinistra, 
-		// poiché la sostituzione all'indietro si basa sui valori calcolati nelle colonne successive
+		// It starts from the penultimate column (n - 2) and proceeds to the left, 
+		// since the backward substitution is based on the values calculated in the subsequent columns
 		for (int col = n - 2; col >= 0; col--) 
 		{
 			int idx = row * n + col;
@@ -244,22 +242,22 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_T
 __global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	/**
-	 * Il kernel implementa l'eliminazione in avanti lungo le righe, operando su ogni colonna della matrice X. 
-	 * L'approccio adottato assegna a ciascun thread una colonna e parallelizza l'elaborazione lungo l'asse delle colonne.
-	 * 
-	 * Ogni thread lavora su una colonna indipendentemente dalle altre, 
-	 * rendendo il kernel parallelizzabile lungo l'asse x. 
-	 * Inoltre L'uso della memoria globale per X, A, e B per ogni accesso può risultare inefficiente.
-	 * L'uso della shared memory potrebbe migliorare l'efficienza del kernel, riducendo gli accessi alla memoria globale.
+	 * The kernel implements forward elimination along the rows, operating on each column of the X matrix. 
+	 * The approach taken assigns each thread a column and parallelizes processing along the column axis.
+	 * 	
+	 * Each thread works on one column independently of the others, 
+	 * making the kernel parallelizable along the x-axis. 
+	 * Also The use of global memory for X, A, and B for each access may be inefficient.
+	 * The use of shared memory could improve kernel efficiency by reducing global memory accesses.
 	 */
 
-	// Associo ogni thread a una colonna, utilizzando blockIdx.x e threadIdx.x
-	// Calcolo dell'Indice della colonna come: col = blockIdx.x * blockDim.x + threadIdx.x;
+	// I associate each thread with a column, using blockIdx.x and threadIdx.x
+	// I calculate the Column Index as: col = blockIdx.x * blockDim.x + threadIdx.x;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
 	{
-		// L'eliminazione in avanti procede dalla seconda riga (row = 1). 
-		// La riga corrente dipende dai valori calcolati nella riga precedente (row - 1).
+		// Forward elimination proceeds from the second row (row = 1). 
+		// The current row depends on the values calculated in the previous row (row - 1).
 		for (int row = 1; row < n; row++) 
 		{
 			int idx = row * n + col;
@@ -278,17 +276,17 @@ __global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, const DATA_T
 __global__ void kernel_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	/**
-	 * Il kernel si occupa della normalizzazione dell'ultima riga della matrice X,
-	 * dividendo ciascun elemento della riga per il corrispondente elemento della matrice B, sempre sull'ultima riga.
-	 * 
-	 * In questo caso, l'uso della shared memory non è vantaggioso. 
-	 * Poiché il kernel opera solo su una singola riga della matrice e ciascun thread elabora un elemento indipendente.
+	 * The kernel takes care of the normalization of the last row of the matrix X,
+	 * dividing each element of the row by the corresponding element of the matrix B, again on the last row.
+	 * 	
+	 * In this case, the use of shared memory is not advantageous. 
+	 * Since the kernel operates only on a single row of the matrix and each thread processes an independent element.
 	 */
 
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
 	{
-		// Questo calcolo determina l'indice globale per l'elemento col della ultima riga di X e B.
+		// This calculation determines the global index for the col element of the last row of X and B.
 		int last_row_idx = (n - 1) * n + col;
 		if(B[last_row_idx] != 0.f)
 			X[last_row_idx] /= B[last_row_idx];
@@ -297,23 +295,23 @@ __global__ void kernel_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 __global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
 	/**
-	 * Il kernel kernel_row_back_sostitution si occupa della sostituzione all'indietro (back substitution) 
-	 * lungo le righe di una matrice. 
-	 * Ogni thread elabora una colonna specifica della matrice X, aggiornando iterativamente i valori di X 
-	 * risalendo dalla penultima riga (n - 2) fino alla prima (row = 0).
+	 * The kernel kernel_row_back_substitution deals with back substitution (back substitution) 
+	 * along the rows of an array. 
+	 * Each thread processes a specific column of matrix X, iteratively updating the values of X 
+	 * going back up from the second-to-last row (n - 2) to the first (row = 0).
 	 * 
-	 * Ogni thread elabora una colonna indipendente della matrice. 
-	 * Questo garantisce una parallelizzazione lungo l'asse x.
-	 * 
-	 * L'uso della shared memory in questo kernel può migliorare le prestazioni, 
-	 * poiché consente di ridurre l'accesso ripetuto alla memoria globale.
+	 * Each thread processes an independent column of the matrix. 
+	 * This ensures parallelization along the x-axis.
+	 * 	
+	 * The use of shared memory in this kernel can improve performance, 
+	 * since it reduces repeated access to global memory.
 	 */
 
-	// Ogni thread è responsabile di una colonna della matrice, determinata da blockIdx.x e threadIdx.x
+	// Each thread is responsible for one column of the matrix, determined by blockIdx.x and threadIdx.x
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	if (col < n)
 	{
-		// La sostituzione all'indietro parte dalla penultima riga (n - 2) e risale fino alla prima riga (row = 0).
+		// Backward substitution starts from the second-to-last row (n - 2) and goes up to the first row (row = 0).
 		for (int row = n - 2; row >= 0; row--) 
 		{
 			int idx = row * n + col;
@@ -464,8 +462,7 @@ int main()
 		printf("Risultati Host e Device NON corrispondono!\n");
 	}
 
-	// Liberazione memoria
-
+	// Free memory
 	free(X_copy);
 	free(B_copy);
 	free(A_host);
