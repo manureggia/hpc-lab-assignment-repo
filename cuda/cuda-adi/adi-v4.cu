@@ -333,21 +333,21 @@ int main()
 	struct timespec rt[2];
 
 	// The following data are needed on the GPU side:
-	// - X[] read/write
-	// - B[] read/write
-	// - A[] read only
-	// So we can use the unified memory for these 2 variables
-	// X=d_X
-	// B=d_B
-	// While A can be copyied to GPU with cudaMalloc
+	// - X[] read/write -> unified memory 
+	// - B[] read/write -> unified memory
+	// - A[] read only 	-> pinned memory
+
+	// NOTE: con A in pinned memory il tempo HOST_ADI è sui 25 secondi
+	// mentre se la alloco con malloc o in memoria unificata il tempo
+	// si aggira sui 6-7 secondi 
 
 	DATA_TYPE *X, *B;
 	gpuErrchk(cudaMallocManaged(&X, bytes));
 	gpuErrchk(cudaMallocManaged(&B, bytes));
-	DATA_TYPE *A_dev;
+	DATA_TYPE *A_host, *A_dev;
+	gpuErrchk(cudaHostAlloc(&A_host, bytes, cudaHostAllocDefault));
 	gpuErrchk(cudaMalloc(&A_dev, bytes));
 
-	DATA_TYPE* A_host = (DATA_TYPE*)malloc(bytes);
 	DATA_TYPE* X_copy = (DATA_TYPE*)malloc(bytes);
 	DATA_TYPE* B_copy = (DATA_TYPE*)malloc(bytes);
 
@@ -465,7 +465,7 @@ int main()
 	// Free memory
 	free(X_copy);
 	free(B_copy);
-	free(A_host);
+	gpuErrchk(cudaFreeHost(A_host));
 	gpuErrchk(cudaFree(X));
 	gpuErrchk(cudaFree(B));
 	gpuErrchk(cudaFree(A_dev));
