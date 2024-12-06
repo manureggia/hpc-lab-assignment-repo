@@ -9,96 +9,97 @@
 
 
 #define gpuErrchk(ans)                        \
-    {                                         \
-        gpuAssert((ans), __FILE__, __LINE__); \
-    }
+{                                         \
+	gpuAssert((ans), __FILE__, __LINE__); \
+}
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
 {
-    if (code != cudaSuccess)
-    {
-        fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-        if (abort)
-            exit(code);
-    }
+	if (code != cudaSuccess)
+	{
+		fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if (abort)
+			exit(code);
+	}
 }
 
 
 void init_array(int n, DATA_TYPE *X, DATA_TYPE *X_DEV, DATA_TYPE *A, DATA_TYPE *B, DATA_TYPE *B_DEV)
 {
-    for (int i = 0; i < n; i++)
-    {
-        for (int j = 0; j < n; j++)
-        {
-            X[i * n + j] = ((DATA_TYPE)i * (j + 1) + 1) / n;
-            X_DEV[i * n + j] = ((DATA_TYPE)i * (j + 1) + 1) / n;
-            A[i * n + j] = ((DATA_TYPE)i * (j + 2) + 2) / n;
-            B[i * n + j] = ((DATA_TYPE)i * (j + 3) + 3) / n;
-            B_DEV[i * n + j] = ((DATA_TYPE)i * (j + 3) + 3) / n;
-        }
-    }
+	#pragma omp parallel
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			X[i * n + j] 			= ((DATA_TYPE)i * (j + 1) + 1) / n;
+			X_DEV[i * n + j] 	= ((DATA_TYPE)i * (j + 1) + 1) / n;
+			A[i * n + j] 			= ((DATA_TYPE)i * (j + 2) + 2) / n;
+			B[i * n + j] 			= ((DATA_TYPE)i * (j + 3) + 3) / n;
+			B_DEV[i * n + j] 	= ((DATA_TYPE)i * (j + 3) + 3) / n;
+		}
+	}
 }
 
 void print_array(int n, DATA_TYPE *X)
 {
-    for (int i = 0; i < n; i++)
-    {
-        for (int j = 0; j < n; j++)
-        {
-            printf("%0.2f", X[i * n + j]);
-            if ((i * n + j) % n == 0)
-                printf("\n");
-        }
-    }
-    printf("\n");
+	for (int i = 0; i < n; i++)
+	{
+		for (int j = 0; j < n; j++)
+		{
+			printf("%0.2f", X[i * n + j]);
+			if ((i * n + j) % n == 0)
+				printf("\n");
+		}
+	}
+	printf("\n");
 }
 
 // Kernel host
 void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
-    for (int t = 0; t < tsteps; t++)
-    {
-        // Aggiornamento lungo le colonne
-        for (int i1 = 0; i1 < n; i1++)
-        {
-            for (int i2 = 1; i2 < n; i2++)
-            {
-                X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-                B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-            }
-        }
+	for (int t = 0; t < tsteps; t++)
+	{
+		// Aggiornamento lungo le colonne
+		for (int i1 = 0; i1 < n; i1++)
+		{
+			for (int i2 = 1; i2 < n; i2++)
+			{
+				X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+			}
+		}
 
-        // Normalizzazione
-        for (int i1 = 0; i1 < n; i1++)
-            X[i1 * n + (n - 1)] /= B[i1 * n + (n - 1)];
+		// Normalizzazione
+		for (int i1 = 0; i1 < n; i1++)
+			X[i1 * n + (n - 1)] /= B[i1 * n + (n - 1)];
 
-        // Back-substitution
-        for (int i1 = 0; i1 < n; i1++)
-        {
-            for (int i2 = 0; i2 < n - 2; i2++)
-                X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / B[i1 * n + (n - i2 - 3)];
-        }
+		// Back-substitution
+		for (int i1 = 0; i1 < n; i1++)
+		{
+			for (int i2 = 0; i2 < n - 2; i2++)
+				X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / B[i1 * n + (n - i2 - 3)];
+		}
 
-        // Aggiornamento lungo le righe
-        for (int i1 = 1; i1 < n; i1++)
-        {
-            for (int i2 = 0; i2 < n; i2++)
-            {
-                X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-                B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-            }
-        }
+		// Aggiornamento lungo le righe
+		for (int i1 = 1; i1 < n; i1++)
+		{
+			for (int i2 = 0; i2 < n; i2++)
+			{
+				X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+			}
+		}
 
-        // Normalizzazione
-        for (int i2 = 0; i2 < n; i2++)
-            X[(n - 1) * n + i2] /= B[(n - 1) * n + i2];
+		// Normalizzazione
+		for (int i2 = 0; i2 < n; i2++)
+			X[(n - 1) * n + i2] /= B[(n - 1) * n + i2];
 
-        // Back-substitution
-        for (int i1 = 0; i1 < n - 2; i1++)
-        {
-            for (int i2 = 0; i2 < n; i2++)
-                X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / B[(n - 2 - i1) * n + i2];
-        }
-    }
+		// Back-substitution
+		for (int i1 = 0; i1 < n - 2; i1++)
+		{
+			for (int i2 = 0; i2 < n; i2++)
+				X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / B[(n - 2 - i1) * n + i2];
+		}
+	}
 }
 
 

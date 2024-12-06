@@ -104,58 +104,58 @@ void kernel_adi_host(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B
 //Kernel Cuda
 __global__ void kernel_adi_device(int tsteps, int n, DATA_TYPE *X, DATA_TYPE *A, DATA_TYPE *B)
 {
-    int i1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int i2 = blockIdx.y * blockDim.y + threadIdx.y;
+	int i1 = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int i2 = (blockIdx.y * blockDim.y) + threadIdx.y;
 
-    for (int t = 0; t < tsteps; t++)
-    {
-        // Aggiornamento lungo le colonne
-        if (i1 < n && i2 > 0 && i2 < n)
-        {
-            X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-            B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
-        }
-        __syncthreads();
+	for (int t = 0; t < tsteps; t++)
+	{
+		// Aggiornamento lungo le colonne
+		if (i1 < n && i2 > 0 && i2 < n)
+		{
+				X[i1 * n + i2] -= X[i1 * n + i2 - 1] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[i1 * n + i2 - 1];
+		}
+		__syncthreads();
 
-        // Normalizzazione lungo l'ultima colonna
-        if (i1 < n && i2 == n - 1)
-        {
-            X[i1 * n + i2] /= B[i1 * n + i2];
-        }
-        __syncthreads();
+		// Normalizzazione lungo l'ultima colonna
+		if (i1 < n && i2 == n - 1)
+		{
+				X[i1 * n + i2] /= B[i1 * n + i2];
+		}
+		__syncthreads();
 
-        // Back-substitution lungo le colonne
-        if (i1 < n && i2 < n - 2)
-        {
-            X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / B[i1 * n + (n - i2 - 3)];
-                                    
-        }
-        __syncthreads();
+		// Back-substitution lungo le colonne
+		if (i1 < n && i2 < n - 2)
+		{
+				X[i1 * n + (n - i2 - 2)] = (X[i1 * n + (n - i2 - 2)] - X[i1 * n + (n - i2 - 3)] * A[i1 * n + (n - i2 - 3)]) / B[i1 * n + (n - i2 - 3)];
+																
+		}
+		__syncthreads();
 
-        // Aggiornamento lungo le righe
-        if (i1 > 0 && i1 < n && i2 < n)
-        {
-            X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-            B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
-        }
-        __syncthreads();
+		// Aggiornamento lungo le righe
+		if (i1 > 0 && i1 < n && i2 < n)
+		{
+				X[i1 * n + i2] -= X[(i1 - 1) * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+				B[i1 * n + i2] -= A[i1 * n + i2] * A[i1 * n + i2] / B[(i1 - 1) * n + i2];
+		}
+		__syncthreads();
 
-        // Normalizzazione lungo l'ultima riga
-        if (i1 == n - 1 && i2 < n)
-        {
-            X[i1 * n + i2] /= B[i1 * n + i2];
-        }
-        __syncthreads();
+		// Normalizzazione lungo l'ultima riga
+		if (i1 == n - 1 && i2 < n)
+		{
+			X[i1 * n + i2] /= B[i1 * n + i2];
+		}
+		__syncthreads();
 
-        // Back-substitution lungo le righe
-        if (i1 < n - 2 && i2 < n)
-        {
-            X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - 
-                                        X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / 
-                                        B[(n - 2 - i1) * n + i2];
-        }
-        __syncthreads();
-    }
+		// Back-substitution lungo le righe
+		if (i1 < n - 2 && i2 < n)
+		{
+			X[(n - 2 - i1) * n + i2] = (X[(n - 2 - i1) * n + i2] - 
+																		X[(n - i1 - 3) * n + i2] * A[(n - 3 - i1) * n + i2]) / 
+																		B[(n - 2 - i1) * n + i2];
+		}
+		__syncthreads();
+	}
 }
 
 // Confronta due matrici per verificare la correttezza
@@ -223,25 +223,24 @@ int main()
     wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
     printf("ADI (GPU): %9.3f sec\n", wt);
     cudaMemcpy(X_dev, d_X, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-/*
-    if (compare_matrices(X, X_dev, n))
-    {
-        printf("Risultati Host e Device CORRETTI!\n");
-    }
-    else
-    {
-        printf("Risultati Host e Device NON corrispondono!\n");
-    }
-*/
-    // Liberazione memoria
-    free(X);
-    free(X_dev);
-    free(A);
-    free(B_dev);
-    free(B);
-    cudaFree(d_X);
-    cudaFree(d_A);
-    cudaFree(d_B);
-
-    return 0;
+	/*
+			if (compare_matrices(X, X_dev, n))
+			{
+					printf("Risultati Host e Device CORRETTI!\n");
+			}
+			else
+			{
+					printf("Risultati Host e Device NON corrispondono!\n");
+			}
+	*/
+	// Liberazione memoria
+	free(X);
+	free(X_dev);
+	free(A);
+	free(B_dev);
+	free(B);
+	cudaFree(d_X);
+	cudaFree(d_A);
+	cudaFree(d_B);
+	return 0;
 }
