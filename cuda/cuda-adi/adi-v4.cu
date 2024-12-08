@@ -39,22 +39,29 @@ void print_array(int n, DATA_TYPE *X)
 // Confronta due matrici per verificare la correttezza
 int compare_matrices(DATA_TYPE *X, DATA_TYPE *X_copy, int n)
 {
-  int return_value = 1;
+  int return_value = EXIT_SUCCESS;
   for (int i = 0; i < n; i++)
   {
     for (int j = 0; j < n; j++)
     {
-      if (fabs(X[i * n + j] - X_copy[i * n + j]) > 1e-6)
+			DATA_TYPE x1 = (DATA_TYPE) X[i * n + j];
+			DATA_TYPE x2 = (DATA_TYPE) X_copy[i * n + j];
+			DATA_TYPE diff = fabs(x1 - x2);
+
+			if(isnan(x1) || isnan(x2))
+				printf("Comparing with nan\n");
+
+      if (diff > 1e-6)
       {
-        printf("Mismatch at (%d, %d): Host = %f, Device = %f\n", i, j, X[i * n + j], X_copy[i * n + j]);
-        return_value = 0;
+        printf("Mismatch at (%d, %d): Device = %f, Host = %f\n", i, j, x1, x2);
+        return_value = EXIT_FAILURE;
       }
     }
   }
-  return return_value;
+  return return_value; 
 }
 
-void host_adi_col_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
+void inline host_adi_col_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	for (int row = 0; row < n; row++)
 	{
@@ -70,7 +77,7 @@ void host_adi_col_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, D
 		}
 	}
 }
-void host_adi_col_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
+void inline host_adi_col_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	for (int col = 0; col < n; col++)
 	{
@@ -79,7 +86,7 @@ void host_adi_col_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 			X[idx] /= B[idx];
 	}
 }
-void host_adi_col_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
+void inline host_adi_col_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, const DATA_TYPE *B)
 {
 	for (int row = 0; row < n; row++)
 	{
@@ -92,7 +99,7 @@ void host_adi_col_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, cons
 		}
 	}
 }
-void host_adi_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
+void inline host_adi_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	for (int row = 1; row < n; row++)
 	{
@@ -108,7 +115,7 @@ void host_adi_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, D
 		}
 	}
 }
-void host_adi_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
+void inline host_adi_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
 	for (int col = 0; col < n; col++)
 	{
@@ -117,7 +124,7 @@ void host_adi_row_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 			X[idx] /= B[idx];
 	}
 }
-void host_adi_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
+void inline host_adi_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	for (int row = n - 2; row >= 0; row--) 
 	{
@@ -130,7 +137,7 @@ void host_adi_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA
 		}
 	}
 }
-void host_adi(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
+void inline host_adi(int tsteps, int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
 	/** At each iteration, the system is updated along the columns and rows */
 	for (int t = 0; t < tsteps; t++)
@@ -165,16 +172,20 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 	 * 2. The row on which each thread operates is calculated as: row = blockIdx.y * blockDim.y + threadIdx.y;
 	 * 	 
 	 * The elements of X, A, and B are used multiple times within the same thread block, 
-	 * they can be loaded into shared memory. 
-	 * Using shared memory reduces the number of global memory accesses, minimizing the latency time.
+	 * they can be loaded into shared memory.
+	 * Using shared memory CAN reduces the number of global memory accesses, minimizing the latency time.
 	 */
+
+	// Version 0: no shared memory
+	// ------------------------------------------------------
+#if 1
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n)
 	{
 		// For each row, the thread iterates over all columns from left to right
 		for (int col = 1; col < n; col++)
 		{
-			// Updates for X and B are made based on the previous values in the same row. 
+			// Updates for X and B are made based on the previous values in the same row.
 			// This depends on the structure of the problem, which has a directional dependence along the columns.
 			int idx = row * n + col;
 			int prev_idx = row * n + (col - 1);
@@ -185,8 +196,120 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 			}
 		}
 	}
-	// TODO: implementazione con shared memory
-	// ...
+#endif
+
+	// Version 1: X and B in shared memory 
+	// ------------------------------------------------------
+#if 0
+	__shared__ DATA_TYPE shared_X[BLOCK_SIZE][BLOCK_SIZE];
+	__shared__ DATA_TYPE shared_B[BLOCK_SIZE][BLOCK_SIZE];
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
+	if (row < n)
+	{
+		// Since it is not possible to copy an entire row to the shared memory
+		// because it is too large, I have to load the rows a little at a time in chunks.
+		// The chunk_size will be equal to BLOCK_SIZE; each iteration loads a chunk of the row in X
+		// on the shared memory.
+		// The number of chunks needed to load the entire row will be equal to ((n + chunk_size - 1) / chunk_size)
+		int chunk_size = BLOCK_SIZE;
+		int num_chunks = (n + chunk_size - 1) / chunk_size;
+		for(int chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++)
+		{
+			// 1. Carica i dati di questo chunk nella memoria condivisa
+			int chunk_start = chunk_idx * chunk_size;
+			int chunk_end = min(chunk_start + chunk_size, n);
+			int local_row = threadIdx.y;
+			for (int col = chunk_start; col < chunk_end; col++)
+			{
+				int local_col = col - chunk_start;
+				shared_X[local_row][local_col] = X[row * n + col];
+				shared_B[local_row][local_col] = B[row * n + col];
+			}
+	
+			// 2. Updating values in Shared Memory
+			for (int col = 1; col < chunk_size; col++)
+			{
+				int global_col = chunk_start + col;
+				if (global_col < n)
+				{
+					DATA_TYPE a = A[row * n + global_col];
+					DATA_TYPE b = shared_B[local_row][col - 1];
+					if(b != 0.f)
+					{
+						shared_X[local_row][col] -= shared_X[local_row][col - 1] * a / shared_B[local_row][col - 1];
+						shared_B[local_row][col] -= a * a / ;
+					}
+				}
+			}
+
+			// 3. Writing in global memory
+			for (int col = chunk_start; col < chunk_end; col++)
+			{
+				int local_col = col - chunk_start;
+				X[row * n + col] = shared_X[local_row][local_col];
+				B[row * n + col] = shared_B[local_row][local_col];
+			}
+		}
+	}
+#endif
+
+	// Version 2: read-only matrix A in shared memory
+	// ------------------------------------------------------
+#if 0
+	__shared__ DATA_TYPE shared_A[BLOCK_SIZE][BLOCK_SIZE];
+	int global_row = blockIdx.y * blockDim.y + threadIdx.y;
+	if (global_row < n)
+	{
+		// Since it is not possible to copy an entire row to the shared memory
+		// because it is too large, I have to load the rows a little at a time in chunks.
+		// The chunk_size will be equal to BLOCK_SIZE; each iteration loads a chunk of the row in X
+		// on the shared memory.
+		// The number of chunks needed to load the entire row will be equal to ((n + chunk_size - 1) / chunk_size)
+		int chunk_size = BLOCK_SIZE;
+		int num_chunks = (n + chunk_size - 1) / chunk_size;
+		for(int chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++)
+		{
+			// Calculation of chunk limits
+			int chunk_start = chunk_idx * chunk_size;
+			int chunk_end = min(chunk_start + chunk_size, n);
+
+			// Loading into shared memory
+			int local_row = threadIdx.y;
+			for (int global_col = chunk_start; global_col < chunk_end; global_col++)
+			{
+				int local_col = global_col - chunk_start;
+				shared_A[local_row][local_col] = A[global_row * n + global_col];
+			}
+			__syncthreads();
+
+			// Updating the values of X and B using shared_A
+			for (int global_col = chunk_start + 1; global_col < chunk_end; global_col++)
+			{
+				int local_col = global_col - chunk_start;
+				int idx = global_row * n + global_col;
+				int prev_idx = global_row * n + (global_col - 1);
+				DATA_TYPE a = shared_A[local_row][local_col];
+				if(B[prev_idx] != 0.f)
+				{
+					X[idx] -= X[prev_idx] * a / B[prev_idx];
+					B[idx] -= a * a / B[prev_idx];
+				}
+			}
+		}
+	}
+#endif
+
+	/**
+	 * Conclusions: version 2, in which shared memory is used only for the A (read-only) array, 
+	 * performs better than version 1 for several reasons:
+	 * 1. Reduced use of shared memory; version 1 uses two shared arrays (shared_X and shared_B),
+	 * 		thus higher memory consumption per block and this results in:
+	 * 		- reduced number of active blocks that can run simultaneously on a single multiprocessor (SM) GPU
+	 * 			reducing parallelism
+	 * 2. Avoiding excessive synchronization; version 1 requires many more calls to __syncthreads() than version 2.
+	 * 3. Martice A is read frequently when updating X and B, so loading it into shared memory reduces 
+	 * 		significantly the number of accesses to global memory, which is much slower than shared memory.
+	 */
 }
 __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 {
@@ -198,7 +321,6 @@ __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 	 * The use of shared memory can be avoided, since no complex iterative calculations are performed on the same row.
 	 * It adds latency with the use of __syncthreads() and may degrade performance
 	 */
-
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
@@ -206,7 +328,7 @@ __global__ void kernel_column_norm(int n, DATA_TYPE *X, const DATA_TYPE *B)
 		// The element X[last_col_idx] is normalized by dividing by B[last_col_idx]
 		// Each thread normalizes one element in the last column of a row.
 		int last_col_idx = row * n + (n - 1);
-		if (B[last_col_idx] != 0.f) // impossibile dividere per 0
+		if (B[last_col_idx] != 0.f)
 			X[last_col_idx] /= B[last_col_idx];
 	}
 }
@@ -221,7 +343,8 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_T
 	 * For example, you could load a row of X, A and B into shared memory
 	 */
 
-	// I assign a row to each thread based on blockIdx.y and threadIdx.y
+	// Version 0: no shared memory
+	// ------------------------------------------------------
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
@@ -236,8 +359,6 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_T
 		}
 	}
 
-	// TODO: implementazione con shared memory
-	// ...
 }
 __global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
@@ -303,7 +424,7 @@ __global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE
 	 * Each thread processes an independent column of the matrix. 
 	 * This ensures parallelization along the x-axis.
 	 * 	
-	 * The use of shared memory in this kernel can improve performance, 
+	 * The use of shared memory in this kernel can improve performance,
 	 * since it reduces repeated access to global memory.
 	 */
 
@@ -328,30 +449,26 @@ __global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE
 int main()
 {
 	const int n = N;
-	const int tsteps = TSTEPS;
+	const int tsteps = 40;
 	const int bytes = sizeof(DATA_TYPE) * n * n;
 	struct timespec rt[2];
 
 	// The following data are needed on the GPU side:
-	// - X[] read/write
-	// - B[] read/write
-	// - A[] read only
-	// So we can use the unified memory for these 2 variables
-	// X=d_X
-	// B=d_B
-	// While A can be copyied to GPU with cudaMalloc
+	// - X[] read/write -> unified memory 
+	// - B[] read/write -> unified memory
+	// - A[] read only 	-> unified memory
 
-	DATA_TYPE *X, *B;
+	// NOTE: con A in pinned memory il tempo HOST_ADI è sui 25 secondi
+	// mentre se la alloco con malloc o in memoria unificata il tempo
+	// si aggira sui 6-7 secondi
+
+	DATA_TYPE *X, *B, *A;
 	gpuErrchk(cudaMallocManaged(&X, bytes));
 	gpuErrchk(cudaMallocManaged(&B, bytes));
-	DATA_TYPE *A_dev;
-	gpuErrchk(cudaMalloc(&A_dev, bytes));
-
-	DATA_TYPE* A_host = (DATA_TYPE*)malloc(bytes);
+	gpuErrchk(cudaMallocManaged(&A, bytes));
 	DATA_TYPE* X_copy = (DATA_TYPE*)malloc(bytes);
 	DATA_TYPE* B_copy = (DATA_TYPE*)malloc(bytes);
 
-	#pragma omp parallel
 	for (int i = 0; i < n; i++)
 	{
 		for (int j = 0; j < n; j++)
@@ -359,17 +476,16 @@ int main()
 			int idx 			= i * n + j;
 			X[idx] 				= ((DATA_TYPE)i * (j + 1) + 1) / n;
 			B[idx] 				= ((DATA_TYPE)i * (j + 3) + 3) / n;
-			A_host[idx] 	= ((DATA_TYPE)i * (j + 2) + 2) / n;
+			A[idx] 				= ((DATA_TYPE)i * (j + 2) + 2) / n;
 			X_copy[idx] 	= ((DATA_TYPE)i * (j + 1) + 1) / n;
 			B_copy[idx] 	= ((DATA_TYPE)i * (j + 3) + 3) / n;
 		}
 	}
-	gpuErrchk(cudaMemcpy(A_dev, A_host, bytes, cudaMemcpyHostToDevice));
 
 	// call ADI on host
 	{
 		clock_gettime(CLOCK_REALTIME, rt);
-		host_adi(tsteps, n, X_copy, A_host, B_copy);
+		host_adi(tsteps, n, X_copy, A, B_copy);
 		clock_gettime(CLOCK_REALTIME, rt + 1);
 
 		double wt = (rt[1].tv_sec - rt[0].tv_sec) + 1.0e-9 * (rt[1].tv_nsec - rt[0].tv_nsec);
@@ -411,7 +527,7 @@ int main()
 			// but the operation for different rows is independent.
 			blockLayout = dim3(1, BLOCK_SIZE, 1);
 			gridLayout 	= dim3(1, nBlocks, 1);
-			kernel_column_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A_dev, B);
+			kernel_column_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());
 			gpuErrchk(cudaDeviceSynchronize());
 			// Normalization: parallelizable per row; each row is independent.
@@ -420,7 +536,7 @@ int main()
 			gpuErrchk(cudaDeviceSynchronize());
 			// Back Substitution: parallelizable per row; again, each row represents an independent tridiagonal system.
 			// The operation along columns depends on the previous values of the same row.
-			kernel_column_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A_dev, B);
+			kernel_column_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 
@@ -432,7 +548,7 @@ int main()
 			// so it is not parallelizable along rows, but can be parallel between different columns.
 			blockLayout = dim3(BLOCK_SIZE, 1, 1);
 			gridLayout 	= dim3(nBlocks, 1, 1);
-			kernel_row_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A_dev, B);
+			kernel_row_forward_elimination<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 			// Normalization: parallelizable by column; each column is independent.
@@ -441,7 +557,7 @@ int main()
 			gpuErrchk(cudaDeviceSynchronize());
 			// Back Substitution: parallelizable by column; similar to forward elimination, 
 			// each column represents an independent tridiagonal system.
-			kernel_row_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A_dev, B);
+			kernel_row_back_sostitution<<<gridLayout, blockLayout>>>(n, X, A, B);
 			gpuErrchk(cudaPeekAtLastError());  
 			gpuErrchk(cudaDeviceSynchronize());
 		}    
@@ -452,22 +568,17 @@ int main()
 		printf("ADI (GPU): %9.3f sec\n", wt);
 	}
 
-
-	if (compare_matrices(X, X_copy, n) && compare_matrices(B, B_copy, n))
-	{
-		printf("Risultati Host e Device CORRETTI!\n");
-	}
+	int compare = compare_matrices(X, X_copy, n);
+	if (compare == EXIT_SUCCESS)
+		printf("La matrice delle soluzione X è CORRETTA!\n");
 	else
-	{
-		printf("Risultati Host e Device NON corrispondono!\n");
-	}
+		printf("La matrice delle soluzione X è SBAGLIATA!\n");
 
 	// Free memory
 	free(X_copy);
 	free(B_copy);
-	free(A_host);
 	gpuErrchk(cudaFree(X));
 	gpuErrchk(cudaFree(B));
-	gpuErrchk(cudaFree(A_dev));
+	gpuErrchk(cudaFree(A));
 	return 0;
 }

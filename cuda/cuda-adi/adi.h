@@ -44,7 +44,7 @@
 # endif
 
 #ifndef BLOCK_SIZE
-#define BLOCK_SIZE 128
+#define BLOCK_SIZE 32
 #endif
 
 #endif /* !ADI */
