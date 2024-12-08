@@ -46,8 +46,12 @@ int compare_matrices(DATA_TYPE *X, DATA_TYPE *X_copy, int n)
     {
 			DATA_TYPE x1 = (DATA_TYPE) X[i * n + j];
 			DATA_TYPE x2 = (DATA_TYPE) X_copy[i * n + j];
-			//printf("Comparing %f and %f...\n", x1, x2);
-      if (fabs(x1 - x2) > 1e-6)
+			DATA_TYPE diff = fabs(x1 - x2);
+
+			if(isnan(x1) || isnan(x2))
+				printf("Comparing with nan\n");
+
+      if (diff > 1e-6)
       {
         printf("Mismatch at (%d, %d): Device = %f, Host = %f\n", i, j, x1, x2);
         return_value = EXIT_FAILURE;
@@ -174,7 +178,7 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 
 	// Version 0: no shared memory
 	// ------------------------------------------------------
-#if 0
+#if 1
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n)
 	{
@@ -193,7 +197,6 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 		}
 	}
 #endif
-
 
 	// Version 1: X and B in shared memory 
 	// ------------------------------------------------------
@@ -227,11 +230,15 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 			for (int col = 1; col < chunk_size; col++)
 			{
 				int global_col = chunk_start + col;
-				if (global_col < n && shared_B[local_row][col - 1] != 0.0f)
+				if (global_col < n)
 				{
 					DATA_TYPE a = A[row * n + global_col];
-					shared_X[local_row][col] -= shared_X[local_row][col - 1] * a / shared_B[local_row][col - 1];
-					shared_B[local_row][col] -= a * a / shared_B[local_row][col - 1];
+					DATA_TYPE b = shared_B[local_row][col - 1];
+					if(b != 0.f)
+					{
+						shared_X[local_row][col] -= shared_X[local_row][col - 1] * a / shared_B[local_row][col - 1];
+						shared_B[local_row][col] -= a * a / ;
+					}
 				}
 			}
 
@@ -248,40 +255,45 @@ __global__ void kernel_column_forward_elimination(int n, DATA_TYPE *X, const DAT
 
 	// Version 2: read-only matrix A in shared memory
 	// ------------------------------------------------------
-#if 1
+#if 0
 	__shared__ DATA_TYPE shared_A[BLOCK_SIZE][BLOCK_SIZE];
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	if (row < n)
+	int global_row = blockIdx.y * blockDim.y + threadIdx.y;
+	if (global_row < n)
 	{
 		// Since it is not possible to copy an entire row to the shared memory
 		// because it is too large, I have to load the rows a little at a time in chunks.
 		// The chunk_size will be equal to BLOCK_SIZE; each iteration loads a chunk of the row in X
 		// on the shared memory.
 		// The number of chunks needed to load the entire row will be equal to ((n + chunk_size - 1) / chunk_size)
-
 		int chunk_size = BLOCK_SIZE;
 		int num_chunks = (n + chunk_size - 1) / chunk_size;
 		for(int chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++)
 		{
-			// 1. Load data into shared memory
+			// Calculation of chunk limits
 			int chunk_start = chunk_idx * chunk_size;
 			int chunk_end = min(chunk_start + chunk_size, n);
+
+			// Loading into shared memory
 			int local_row = threadIdx.y;
 			for (int global_col = chunk_start; global_col < chunk_end; global_col++)
 			{
 				int local_col = global_col - chunk_start;
-				shared_A[local_row][local_col] = A[row * n + global_col];
+				shared_A[local_row][local_col] = A[global_row * n + global_col];
 			}
+			__syncthreads();
 
-			// 2. Updating the values of X and B using shared_A
+			// Updating the values of X and B using shared_A
 			for (int global_col = chunk_start + 1; global_col < chunk_end; global_col++)
 			{
 				int local_col = global_col - chunk_start;
-				int idx = row * n + global_col;
-				int prev_idx = row * n + (global_col - 1);
+				int idx = global_row * n + global_col;
+				int prev_idx = global_row * n + (global_col - 1);
 				DATA_TYPE a = shared_A[local_row][local_col];
-				X[idx] -= X[prev_idx] * a / B[prev_idx];
-				B[idx] -= a * a / B[prev_idx];
+				if(B[prev_idx] != 0.f)
+				{
+					X[idx] -= X[prev_idx] * a / B[prev_idx];
+					B[idx] -= a * a / B[prev_idx];
+				}
 			}
 		}
 	}
@@ -333,7 +345,6 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_T
 
 	// Version 0: no shared memory
 	// ------------------------------------------------------
-#if 1
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	if (row < n) 
 	{
@@ -347,50 +358,7 @@ __global__ void kernel_column_back_sostitution(int n, DATA_TYPE *X, const DATA_T
 				X[idx] = (X[idx] - X[next_idx] * A[next_idx]) / B[idx];
 		}
 	}
-#endif
 
-	// Version 1: read-only matrices A and B in shared memory
-	// ------------------------------------------------------
-
-	// QUESTA VERSIONE È SBAGLIATA
-#if 0
-	__shared__ DATA_TYPE shared_A[BLOCK_SIZE][BLOCK_SIZE];
-	__shared__ DATA_TYPE shared_B[BLOCK_SIZE][BLOCK_SIZE];
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	if (row < n) 
-	{
-		// Caricamento di A e B nella shared memory
-		int local_row = threadIdx.y;
-		int chunk_size = BLOCK_SIZE;
-		int num_chunks = (n + chunk_size - 1) / chunk_size;
-
-		// Loop attraverso i chunk (caricando da destra verso sinistra)
-		for (int chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++)
-		{
- 			int chunk_end 	= n - (chunk_idx * chunk_size); 		// Limite destro del chunk
-			int chunk_start = max(chunk_end - chunk_size, 0);  	// Limite sinistro del chunk
-
-			// Caricamento dei dati nella shared memory
-			for (int global_col = chunk_start; global_col < chunk_end; global_col++)
-			{
-				int local_col = global_col - chunk_start;
-        // Caricare A e B nelle relative memorie condivise
-        shared_A[local_row][local_col] = A[row * n + global_col];
-        shared_B[local_row][local_col] = B[row * n + global_col];
-			}
-
-			// Aggiornamento dei valori di X usando shared_A e shared_B
-			for (int col = chunk_end - 1; col >= chunk_start + 1; col--)
-			{
-				int idx = row * n + col;
-				int next_idx = row * n + (col + 1);
-				DATA_TYPE a = shared_A[local_row][col + 1];
-				DATA_TYPE b = shared_B[local_row][col];
-				X[idx] = (X[idx] - X[next_idx] * a) / b;
-			}
-		}
-	}
-#endif
 }
 __global__ void kernel_row_forward_elimination(int n, DATA_TYPE *X, const DATA_TYPE *A, DATA_TYPE *B)
 {
@@ -481,7 +449,7 @@ __global__ void kernel_row_back_sostitution(int n, DATA_TYPE *X, const DATA_TYPE
 int main()
 {
 	const int n = N;
-	const int tsteps = TSTEPS;
+	const int tsteps = 40;
 	const int bytes = sizeof(DATA_TYPE) * n * n;
 	struct timespec rt[2];
 
@@ -603,7 +571,7 @@ int main()
 	int compare = compare_matrices(X, X_copy, n);
 	if (compare == EXIT_SUCCESS)
 		printf("La matrice delle soluzione X è CORRETTA!\n");
-	else if(compare == EXIT_FAILURE)
+	else
 		printf("La matrice delle soluzione X è SBAGLIATA!\n");
 
 	// Free memory
