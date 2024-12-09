@@ -22,3 +22,19 @@ with pref:
 module load perf/1.0
 perf stat -e cycles,instructions,cache-references,cache-misses ./adi_acc 
 ```
+
+
+# Second Assignment
+
+## How to run
+
+```bash
+make EXERCISE=adi-v4.cu clean all run
+```
+
+For profiling:
+
+```bash
+make EXERCISE=adi-v4.cu clean all profile
+```
+
